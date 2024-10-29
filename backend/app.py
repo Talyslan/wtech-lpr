@@ -53,13 +53,26 @@ def recognize():
 
         image = Image.open(io.BytesIO(image_response.content))
 
+        # Pré-processamento da imagem
+        img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+        # Convertendo para escala de cinza
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+
+        # Aplicando um desfoque para suavizar a imagem
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        # Aplicando binarização para melhorar a detecção de texto
+        _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
         # Usar pytesseract para reconhecer texto na imagem
-        # Você pode ajustar o PSM (Page Segmentation Mode) conforme necessário
-        text = pytesseract.image_to_string(image, config='--psm 8')  # PSM 8 trata a imagem como uma única linha
+        # Ajustando o PSM e OCR Engine Mode conforme necessário
+        custom_config = r'--oem 3 --psm 8'  # OEM 3 usa o modo padrão de OCR e PSM 8 trata a imagem como uma única linha
+        text = pytesseract.image_to_string(binary, config=custom_config)
 
         # Processar e limpar o texto reconhecido
         recognized_text = text.strip()
-        
+
         # Retornar o texto reconhecido
         return jsonify({'plate': recognized_text})
 
