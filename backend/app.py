@@ -4,8 +4,9 @@ import numpy as np
 import requests
 from PIL import Image
 import io
-import pytesseract  # Certifique-se de que o pytesseract está instalado
 from flask_cors import CORS 
+import base64
+import pytesseract 
 
 app = Flask(__name__)
 CORS(app)
@@ -36,7 +37,7 @@ def capture():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# Rota para reconhecer texto em uma imagem
+# Rota para reconhecer placa da imagem
 @app.route('/recognize', methods=['POST'])
 def recognize():
     try:
@@ -46,9 +47,13 @@ def recognize():
 
         if not image_url:
             return jsonify({'error': 'URL da imagem não fornecida'}), 400
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36"
+        }
 
         # Fazer o download da imagem
-        image_response = requests.get(image_url)
+        image_response = requests.get(image_url, headers=headers)
         image_response.raise_for_status()  # Levanta um erro se a requisição falhar
 
         image = Image.open(io.BytesIO(image_response.content))
@@ -56,25 +61,34 @@ def recognize():
         # Pré-processamento da imagem
         img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
-        # Convertendo para escala de cinza
+        # 1. Redimensionar a imagem
+        img_cv = cv2.resize(img_cv, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+
+        # 2. Converter para escala de cinza
         gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
 
-        # Aplicando um desfoque para suavizar a imagem
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        # 3. Binarização com Otsu
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-        # Aplicando binarização para melhorar a detecção de texto
-        _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # 4. Remover ruído
+        binary = cv2.medianBlur(binary, 3)
 
-        # Usar pytesseract para reconhecer texto na imagem
-        # Ajustando o PSM e OCR Engine Mode conforme necessário
-        custom_config = r'--oem 3 --psm 8'  # OEM 3 usa o modo padrão de OCR e PSM 8 trata a imagem como uma única linha
-        text = pytesseract.image_to_string(binary, config=custom_config)
+        # Salvar a imagem processada para visualização
+        processed_image = Image.fromarray(binary)
+        processed_image.show()
 
-        # Processar e limpar o texto reconhecido
-        recognized_text = text.strip()
+        # 6. Processar e limpar o texto reconhecido
+        custom_config = r'--oem 3 --psm 8'
+        recognized_text = pytesseract.image_to_string(binary, config=custom_config)
 
-        # Retornar o texto reconhecido
-        return jsonify({'plate': recognized_text})
+        # Converter a imagem processada para WEBP para compressão superior
+        is_success, buffer = cv2.imencode('.webp', binary, [int(cv2.IMWRITE_WEBP_QUALITY), 40])
+        binary_base64 = base64.b64encode(buffer).decode('utf-8')
+
+        return jsonify({
+            'plate': recognized_text.strip(),
+            'processed_image': binary_base64,
+        })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500

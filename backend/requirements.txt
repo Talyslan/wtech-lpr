@@ -4,3 +4,4 @@ numpy
 opencv-python
 Pillow
 pytesseract
+flask_cors
