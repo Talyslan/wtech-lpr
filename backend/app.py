@@ -47,43 +47,21 @@ def recognize():
 
         if not image_url:
             return jsonify({'error': 'URL da imagem não fornecida'}), 400
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36"
-        }
 
-        # Fazer o download da imagem
-        image_response = requests.get(image_url, headers=headers)
-        image_response.raise_for_status()  # Levanta um erro se a requisição falhar
+        # 1. Baixar a imagem
+        image = download_image(image_url)
 
-        image = Image.open(io.BytesIO(image_response.content))
-
-        # Pré-processamento da imagem
-        img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-
-        # 1. Redimensionar a imagem
-        img_cv = cv2.resize(img_cv, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
-
-        # 2. Converter para escala de cinza
-        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-
-        # 3. Binarização com Otsu
-        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        # 4. Remover ruído
-        binary = cv2.medianBlur(binary, 3)
-
+        # 2. Pré-processar a imagem
+        binary_image = preprocess_image(image)
         # Salvar a imagem processada para visualização
-        processed_image = Image.fromarray(binary)
+        processed_image = Image.fromarray(binary_image)
         processed_image.show()
 
-        # 6. Processar e limpar o texto reconhecido
-        custom_config = r'--oem 3 --psm 8'
-        recognized_text = pytesseract.image_to_string(binary, config=custom_config)
+        # 3. Reconhecer o texto na imagem processada
+        recognized_text = recognize_text(binary_image)
 
-        # Converter a imagem processada para WEBP para compressão superior
-        is_success, buffer = cv2.imencode('.webp', binary, [int(cv2.IMWRITE_WEBP_QUALITY), 40])
-        binary_base64 = base64.b64encode(buffer).decode('utf-8')
+        # 4. Converter imagem processada para base64
+        binary_base64 = convert_to_base64(binary_image)
 
         return jsonify({
             'plate': recognized_text.strip(),
@@ -92,6 +70,80 @@ def recognize():
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+def download_image(image_url):
+    """Faz o download da imagem a partir de uma URL."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36"
+    }
+    image_response = requests.get(image_url, headers=headers)
+    image_response.raise_for_status()  # Levanta um erro se a requisição falhar
+    return Image.open(io.BytesIO(image_response.content))
+
+
+def preprocess_image(image):
+    """Pré-processa a imagem para reconhecimento de placa."""
+
+    # Converter imagem para formato do OpenCV
+    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+    # Redimensionar a imagem para melhorar a resolução
+    img_cv = cv2.resize(img_cv, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+
+    # Converter para escala de cinza, necessário antes de aplicar a operação Black Hat
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+
+    # Remover ruído inicial com um filtro de mediana aplicado no gray
+    gray = cv2.medianBlur(gray, 1)
+
+    # Aplicar operação Black Hat para melhorar os detalhes escuros
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+
+    # Binarização com Otsu
+    _, binary = cv2.threshold(blackhat, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Encontra componentes conectados para eliminar ruído adicional
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+
+    # Filtrar componentes pequenos e muito grandes que não se assemelham a caracteres
+    for i in range(1, num_labels):
+        area = stats[i, cv2.CC_STAT_AREA]
+        width = stats[i, cv2.CC_STAT_WIDTH]
+        height = stats[i, cv2.CC_STAT_HEIGHT]
+
+        # Limites de filtro para caracteres típicos (ajuste conforme necessário)
+        if area < 50 or area > 700 or width > 100 or height > 100:
+            binary[labels == i] = 0  # Remover componente não desejado
+
+    # Encontrar contornos na imagem binária
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Encontrar a menor caixa delimitadora que engloba todos os caracteres detectados
+    if contours:
+        x, y, w, h = cv2.boundingRect(np.concatenate(contours))
+        cropped_image = binary[y:y + h, x:x + w]  # Recorta a região da placa
+
+        return cropped_image
+    else:
+        # Se nenhum contorno for encontrado, retornar a imagem binária original
+        return binary
+
+
+def recognize_text(binary_image):
+    """Usa OCR para reconhecer o texto na imagem binária."""
+    custom_config = r'--oem 3 --psm 7'
+    # Executa o OCR
+    text = pytesseract.image_to_string(binary_image, config=custom_config)
+    # Limpeza adicional de espaços ou quebras de linha
+    return text.strip()
+
+
+def convert_to_base64(binary_image):
+    """Converte a imagem binária para base64 em formato WEBP."""
+    is_success, buffer = cv2.imencode('.webp', binary_image, [int(cv2.IMWRITE_WEBP_QUALITY), 40])
+    return base64.b64encode(buffer).decode('utf-8')
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
